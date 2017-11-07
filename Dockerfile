@@ -5,7 +5,7 @@ ADD . /go/src/github.com/evildecay/etcdkeeper3
 RUN apk add -U git \
     && cd /go/src/github.com/evildecay/etcdkeeper3 \
     && go get github.com/golang/dep/... \
-    && dep ensure -update \
+    && dep ensure \
     && go build -o etcdkeeper3.bin httpserver3.go
 
 FROM alpine:3.6
