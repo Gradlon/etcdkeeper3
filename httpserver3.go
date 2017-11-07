@@ -1,6 +1,6 @@
 package main
 
-import(
+import (
 	"io"
 	"log"
 	"net/http"
@@ -11,12 +11,13 @@ import(
 	"github.com/coreos/etcd/clientv3"
 	"golang.org/x/net/context"
 	"encoding/json"
+	"google.golang.org/grpc"
 )
 
 var cli *clientv3.Client
 
 func main() {
-	host := flag.String("h","0.0.0.0","host name or ip address")
+	host := flag.String("h", "0.0.0.0", "host name or ip address")
 	port := flag.Int("p", 8080, "port")
 	flag.CommandLine.Parse(os.Args[1:])
 
@@ -26,26 +27,27 @@ func main() {
 	http.HandleFunc("/delete", del)
 
 	wd, err := os.Getwd()
-	if err != nil{
+	if err != nil {
 		log.Fatal(err)
 	}
 	http.Handle("/", http.FileServer(http.Dir(wd))) // view static directory
 
 	log.Printf("listening on %s:%d\n", *host, *port)
-	err = http.ListenAndServe(*host + ":" + strconv.Itoa(*port), nil)
+	err = http.ListenAndServe(*host+":"+strconv.Itoa(*port), nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
-func connect(w http.ResponseWriter, r *http.Request){
+func connect(w http.ResponseWriter, r *http.Request) {
+	log.Println("connect")
 	if cli != nil {
 		etcdHost := cli.Endpoints()[0]
 		if r.FormValue("host") == etcdHost {
 			io.WriteString(w, "running")
 			return
-		}else {
-			if err := cli.Close();err != nil {
+		} else {
+			if err := cli.Close(); err != nil {
 				log.Println(err.Error())
 			}
 		}
@@ -55,15 +57,16 @@ func connect(w http.ResponseWriter, r *http.Request){
 	cli, err = clientv3.New(clientv3.Config{
 		Endpoints:   endpoints,
 		DialTimeout: 5 * time.Second,
+		DialOptions: []grpc.DialOption{grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64 * 1024 * 1024))},
 	})
 	if err != nil {
 		io.WriteString(w, string(err.Error()))
-	}else {
+	} else {
 		io.WriteString(w, "ok")
 	}
 }
 
-func put(w http.ResponseWriter, r *http.Request){
+func put(w http.ResponseWriter, r *http.Request) {
 	key := r.FormValue("key")
 	value := r.FormValue("value")
 	ttl := r.FormValue("ttl")
@@ -80,15 +83,15 @@ func put(w http.ResponseWriter, r *http.Request){
 		var leaseResp *clientv3.LeaseGrantResponse
 		leaseResp, err = cli.Grant(context.TODO(), sec)
 		_, err = cli.Put(context.Background(), key, value, clientv3.WithLease(leaseResp.ID))
-	}else {
+	} else {
 		_, err = cli.Put(context.Background(), key, value)
 	}
 	if err != nil {
 		io.WriteString(w, string(err.Error()))
-	}else {
-		if resp, err := cli.Get(context.Background(), key, clientv3.WithPrefix());err != nil {
+	} else {
+		if resp, err := cli.Get(context.Background(), key, clientv3.WithPrefix()); err != nil {
 			data["errorCode"] = err.Error()
-		}else {
+		} else {
 			if resp.Count > 0 {
 				kv := resp.Kvs[0]
 				node := make(map[string]interface{})
@@ -102,7 +105,7 @@ func put(w http.ResponseWriter, r *http.Request){
 			}
 		}
 		var dataByte []byte
-		if dataByte, err = json.Marshal(data);err != nil {
+		if dataByte, err = json.Marshal(data); err != nil {
 			io.WriteString(w, err.Error())
 		} else {
 			io.WriteString(w, string(dataByte))
@@ -110,13 +113,20 @@ func put(w http.ResponseWriter, r *http.Request){
 	}
 }
 
-func get(w http.ResponseWriter, r *http.Request){
+func get(w http.ResponseWriter, r *http.Request) {
 	key := r.FormValue("key")
 	data := make(map[string]interface{})
 	log.Println("GET", key)
-	if resp, err := cli.Get(context.Background(), key, clientv3.WithPrefix());err != nil {
+	opt := make([]clientv3.OpOption, 0)
+	opt = append(opt, clientv3.WithPrefix())
+	if r.FormValue("prefix") == "true" {
+		opt = append(opt, clientv3.WithKeysOnly())
+		// opt = append(opt, clientv3.WithLimit(30))
+	}
+	if resp, err := cli.Get(context.Background(), key, opt...); err != nil {
 		data["errorCode"] = err.Error()
-	}else {
+		log.Printf("Error: %s\n", err)
+	} else {
 		if r.FormValue("prefix") == "true" {
 			pnode := make(map[string]interface{})
 			pnode["key"] = key
@@ -133,7 +143,7 @@ func get(w http.ResponseWriter, r *http.Request){
 				pnode["nodes"] = append(nodes, node)
 			}
 			data["node"] = pnode
-		}else {
+		} else {
 			if resp.Count > 0 {
 				kv := resp.Kvs[0]
 				node := make(map[string]interface{})
@@ -144,26 +154,26 @@ func get(w http.ResponseWriter, r *http.Request){
 				node["createdIndex"] = kv.CreateRevision
 				node["modifiedIndex"] = kv.ModRevision
 				data["node"] = node
-			}else {
+			} else {
 				data["errorCode"] = "The node does not exist."
 			}
 		}
 	}
 	var dataByte []byte
 	var err error
-	if dataByte, err = json.Marshal(data);err != nil {
+	if dataByte, err = json.Marshal(data); err != nil {
 		io.WriteString(w, err.Error())
 	} else {
 		io.WriteString(w, string(dataByte))
 	}
 }
 
-func del(w http.ResponseWriter, r *http.Request){
+func del(w http.ResponseWriter, r *http.Request) {
 	key := r.FormValue("key")
 	log.Println("DELETE", key)
-	if _, err := cli.Delete(context.Background(), key);err != nil {
+	if _, err := cli.Delete(context.Background(), key); err != nil {
 		io.WriteString(w, err.Error())
-	}else {
+	} else {
 		io.WriteString(w, "ok")
 	}
 }
